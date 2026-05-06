@@ -1,0 +1,8 @@
+.env
+.tmp/
+__pycache__/
+*.pyc
+.venv/
+.superpowers/
+credentials.json
+token.json
