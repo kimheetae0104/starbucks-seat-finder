@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-스타벅스 코리아 매장 혼잡도 데이터를 가져온다.
-전략: Starbucks API 먼저 시도 → 실패 시 Playwright 브라우저 스크래핑 폴백
+스타벅스 매장 가용성 데이터를 가져온다.
+데이터 소스: Naver Map 검색 API (영업 상태) + 시간대별 혼잡도 추정
 
-Usage: python execution/fetch_store_data.py [--store-id 1077]
+Usage: python execution/fetch_store_data.py
 Output: JSON to stdout
 Exit: 0=success, 1=error
 """
@@ -11,71 +11,30 @@ Exit: 0=success, 1=error
 import sys
 import json
 import argparse
-import time
 import requests
+import re
 from pathlib import Path
+from datetime import datetime
 
 BASE_DIR = Path(__file__).parent.parent
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "Accept-Language": "ko-KR,ko;q=0.9",
-    "X-Requested-With": "XMLHttpRequest",
-    "Referer": "https://www.starbucks.co.kr/store/store_map.do",
+    "Referer": "https://map.naver.com/",
 }
 
-CONGESTION_MAP = {
-    "0": "여유", "1": "보통", "2": "혼잡", "3": "매우혼잡",
-    "여유": "여유", "보통": "보통", "혼잡": "혼잡", "매우혼잡": "매우혼잡",
-}
+NAVER_SEARCH_API = "https://map.naver.com/p/api/search/allSearch"
 
 
-# ── Approach A: Starbucks Korea Official API ──────────────────────────────────
+# ── Naver Map 영업 상태 조회 ───────────────────────────────────────────────────
 
-def _get_session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    try:
-        session.get("https://www.starbucks.co.kr/store/store_map.do", timeout=10)
-    except Exception:
-        pass
-    return session
-
-
-def _fetch_via_api(store: dict, session: requests.Session) -> dict | None:
-    try:
-        r = session.post(
-            "https://www.starbucks.co.kr/store/getStore.do",
-            data={"disp": "N", "in_biz_cd": "", "in_scodes": ""},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        stores = data.get("list", [])
-        for s in stores:
-            if str(s.get("seq", "")) == str(store["id"]):
-                congestion_code = str(s.get("congestCd", s.get("CONGEST_CD", "-1")))
-                return {
-                    "store_id": str(store["id"]),
-                    "name": store.get("name", s.get("s_name", "")),
-                    "address": store.get("address", s.get("s_addr1", "")),
-                    "congestion_code": congestion_code,
-                    "congestion_level": CONGESTION_MAP.get(congestion_code, "알수없음"),
-                    "source": "starbucks_api",
-                }
-    except Exception:
-        pass
-    return None
-
-
-# ── Approach B: Playwright Browser Scraping ───────────────────────────────────
-
-def _fetch_via_playwright(stores: list[dict]) -> list[dict]:
+def _fetch_naver_all_stores(stores: list[dict]) -> dict[str, dict]:
+    """Playwright로 Naver Map 검색 → 모든 매장 영업 상태 반환. {store_name: item}"""
     from playwright.sync_api import sync_playwright
 
-    results = []
+    results = {}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -85,76 +44,92 @@ def _fetch_via_playwright(stores: list[dict]) -> list[dict]:
         )
         page = context.new_page()
 
-        captured = {}
-
         def handle_response(response):
-            if "getStore" in response.url and response.status == 200:
+            if "allSearch" in response.url and response.status == 200:
                 try:
-                    body = response.json()
-                    store_list = body.get("list", [])
-                    for s in store_list:
-                        sid = str(s.get("seq", s.get("s_seq", "")))
-                        if sid:
-                            captured[sid] = s
+                    data = response.json()
+                    items = (data.get("result") or {}).get("place") or {}
+                    item_list = items.get("list", [])
+                    for item in item_list:
+                        name = item.get("name", "")
+                        naver_id = item.get("id", "")
+                        if naver_id:
+                            results[name] = item
                 except Exception:
                     pass
 
         page.on("response", handle_response)
 
-        try:
-            page.goto("https://www.starbucks.co.kr/store/store_map.do", timeout=30000, wait_until="networkidle")
-            page.wait_for_timeout(2000)
-        except Exception as e:
-            print(f"[WARN] 페이지 로드 실패: {e}", file=sys.stderr)
-
+        # 각 매장 검색 (페이지 내에서 검색 트리거)
         for store in stores:
-            sid = str(store["id"])
-            if sid in captured:
-                s = captured[sid]
-                congestion_code = str(s.get("congestCd", s.get("CONGEST_CD", "-1")))
-                results.append({
-                    "store_id": sid,
-                    "name": store.get("name", s.get("s_name", "")),
-                    "address": store.get("address", s.get("s_addr1", "")),
-                    "congestion_code": congestion_code,
-                    "congestion_level": CONGESTION_MAP.get(congestion_code, "알수없음"),
-                    "source": "playwright",
-                })
-            else:
-                # 직접 검색 시도
-                try:
-                    captured.clear()
-                    page.evaluate(f"""
-                        fetch('/store/getStore.do', {{
-                            method: 'POST',
-                            headers: {{'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest'}},
-                            body: 'disp=N&in_biz_cd=&in_scodes='
-                        }}).then(r => r.json()).then(d => window.__sbResult = d);
-                    """)
-                    page.wait_for_timeout(2000)
-                    result_data = page.evaluate("window.__sbResult || {}")
-                    store_list = result_data.get("list", []) if isinstance(result_data, dict) else []
-                    for s in store_list:
-                        if str(s.get("seq", "")) == sid:
-                            congestion_code = str(s.get("congestCd", "-1"))
-                            results.append({
-                                "store_id": sid,
-                                "name": store.get("name", ""),
-                                "address": store.get("address", ""),
-                                "congestion_code": congestion_code,
-                                "congestion_level": CONGESTION_MAP.get(congestion_code, "알수없음"),
-                                "source": "playwright_fetch",
-                            })
-                            break
-                except Exception as e:
-                    print(f"[WARN] store {sid} playwright fetch 실패: {e}", file=sys.stderr)
+            query = f"스타벅스 {store['name']}점"
+            try:
+                page.goto(
+                    f"https://map.naver.com/v5/search/{requests.utils.quote(query)}",
+                    timeout=15000,
+                    wait_until="domcontentloaded",
+                )
+                page.wait_for_timeout(2000)
+            except Exception as e:
+                print(f"[WARN] Naver 검색 실패 ({store['name']}): {e}", file=sys.stderr)
 
         browser.close()
 
     return results
 
 
-# ── Fallback: Mock data (dev/test용) ─────────────────────────────────────────
+def _extract_business_status(item: dict) -> dict:
+    """Naver 응답에서 영업 상태 추출."""
+    bs = item.get("businessStatus", {})
+    status = bs.get("status", {})
+    code = status.get("code", -1)
+    # code: 1=영업준비중, 2=영업중, 3=영업종료, 4=임시휴업
+    is_open = code == 2
+    text = status.get("text", "알수없음")
+    detail = status.get("detailInfo", "")
+    return {
+        "is_open": is_open,
+        "status_code": code,
+        "status_text": text,
+        "detail": detail,
+    }
+
+
+# ── 시간대별 혼잡도 추정 ──────────────────────────────────────────────────────
+
+PEAK_HOURS = {
+    # 요일별 (0=월, 6=일), 시간대별 혼잡도 점수 (0=여유, 1=보통, 2=혼잡)
+    "weekday": {  # 월-금
+        6: 0, 7: 1, 8: 2, 9: 2,       # 아침 러시
+        10: 1, 11: 1,
+        12: 2, 13: 2,                   # 점심 러시
+        14: 1, 15: 1, 16: 1,
+        17: 2, 18: 2, 19: 1,            # 저녁 러시
+        20: 1, 21: 0, 22: 0,
+    },
+    "weekend": {  # 토-일
+        9: 0, 10: 1, 11: 2, 12: 2,
+        13: 2, 14: 2, 15: 1, 16: 1,
+        17: 1, 18: 1, 19: 0, 20: 0,
+    },
+}
+
+CONGESTION_LABELS = {0: "여유", 1: "보통", 2: "혼잡"}
+
+
+def _estimate_congestion() -> tuple[str, str]:
+    """현재 시각 기반 혼잡도 추정. (congestion_level, congestion_code)"""
+    now = datetime.now()
+    hour = now.hour
+    weekday = now.weekday()  # 0=월요일
+
+    table = PEAK_HOURS["weekend"] if weekday >= 5 else PEAK_HOURS["weekday"]
+    score = table.get(hour, 0)
+    label = CONGESTION_LABELS[score]
+    return label, str(score)
+
+
+# ── Mock 데이터 ───────────────────────────────────────────────────────────────
 
 def _fetch_mock(stores: list[dict]) -> list[dict]:
     import random
@@ -169,6 +144,8 @@ def _fetch_mock(stores: list[dict]) -> list[dict]:
             "address": store.get("address", ""),
             "congestion_code": code,
             "congestion_level": level,
+            "is_open": True,
+            "status_text": "영업 중",
             "source": "mock",
         })
     return results
@@ -180,34 +157,54 @@ def fetch_all(stores: list[dict], use_mock: bool = False) -> list[dict]:
     if use_mock:
         return _fetch_mock(stores)
 
-    # Try API first
-    session = _get_session()
-    api_results = []
+    congestion_level, congestion_code = _estimate_congestion()
+
+    # Playwright로 Naver Map에서 영업 상태 조회
+    naver_map = _fetch_naver_all_stores(stores)
+
+    results = []
     for store in stores:
-        result = _fetch_via_api(store, session)
-        if result:
-            api_results.append(result)
-        time.sleep(0.3)
+        store_name = store.get("name", "")
 
-    if api_results:
-        return api_results
+        # 이름 매칭
+        naver_item = None
+        for key, item in naver_map.items():
+            item_short = key.replace("스타벅스 ", "").replace("스타벅스", "").replace("점", "").replace(" ", "")
+            store_short = store_name.replace(" ", "")
+            if store_short in item_short or item_short in store_short:
+                naver_item = item
+                break
 
-    # Fallback: Playwright
-    print("[INFO] API 실패, Playwright 스크래핑으로 전환...", file=sys.stderr)
-    playwright_results = _fetch_via_playwright(stores)
+        if naver_item:
+            biz = _extract_business_status(naver_item)
+            naver_id = naver_item.get("id", "")
+            address = naver_item.get("roadAddress") or naver_item.get("address") or store.get("address", "")
+        else:
+            biz = {"is_open": True, "status_code": -1, "status_text": "알수없음", "detail": ""}
+            naver_id = ""
+            address = store.get("address", "")
 
-    if playwright_results:
-        return playwright_results
+        results.append({
+            "store_id": str(store["id"]),
+            "naver_id": naver_id,
+            "name": store_name,
+            "address": address,
+            "is_open": biz["is_open"],
+            "status_text": biz["status_text"],
+            "status_detail": biz["detail"],
+            "congestion_level": congestion_level if biz["is_open"] else "영업 외",
+            "congestion_code": congestion_code if biz["is_open"] else "-1",
+            "source": "naver_map+heuristic",
+        })
 
-    print("[WARN] 모든 데이터 소스 실패. Mock 데이터 사용", file=sys.stderr)
-    return _fetch_mock(stores)
+    return results
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--store-id", help="단일 매장 ID")
     parser.add_argument("--config", default="config/stores.json")
-    parser.add_argument("--mock", action="store_true", help="Mock 데이터 사용 (테스트용)")
+    parser.add_argument("--mock", action="store_true", help="Mock 데이터 사용")
     args = parser.parse_args()
 
     try:

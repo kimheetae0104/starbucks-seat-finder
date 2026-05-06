@@ -15,6 +15,7 @@ from datetime import datetime
 
 NOTIFY_LEVELS = {"여유"}
 NOTIFY_ON_MODERATE_LEVELS = {"여유", "보통"}
+CLOSED_LEVELS = {"영업 외", "알수없음"}
 
 STATE_FILE = ".tmp/store_state.json"
 
@@ -37,6 +38,9 @@ def save_state(path: str, state: dict):
 
 def should_notify(prev_level: str | None, current_level: str, notify_on_moderate: bool) -> bool:
     target_levels = NOTIFY_ON_MODERATE_LEVELS if notify_on_moderate else NOTIFY_LEVELS
+    # 영업 외이거나 알 수 없으면 알림 없음
+    if current_level in CLOSED_LEVELS:
+        return False
     if current_level not in target_levels:
         return False
     # 첫 조회이거나 이전 상태에서 변화가 있을 때만 알림
