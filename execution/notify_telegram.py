@@ -33,8 +33,11 @@ def format_message(store: dict) -> str:
     address = store.get("address", "")
     checked_at = store.get("checked_at", "")
     prev = store.get("prev_level")
+    weather_note = store.get("weather_note", "")
+    weather = store.get("weather", "")
 
     change = f"\n📊 변화: {prev} → {level}" if prev else ""
+    weather_line = f"\n🌤 날씨: {weather}" + (f"  {weather_note}" if weather_note else "")
 
     maps_url = f"https://maps.google.com/?q={requests.utils.quote(f'스타벅스 {name}')}"
 
@@ -42,7 +45,8 @@ def format_message(store: dict) -> str:
         f"{emoji} 자리 났어요!\n\n"
         f"📍 스타벅스 {name}\n"
         f"🏃 현재 상태: {level}{change}\n"
-        f"🕐 확인 시각: {checked_at}\n"
+        f"🕐 확인 시각: {checked_at}"
+        f"{weather_line}\n"
         f"📫 주소: {address}\n\n"
         f"🗺️ {maps_url}"
     )

@@ -24,7 +24,7 @@ Agent.md의 3-Layer 구조를 따릅니다:
 ```bash
 # 1. 의존성 설치
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
 
@@ -32,22 +32,26 @@ playwright install chromium
 cp .env.example .env
 # .env 파일에 TELEGRAM_BOT_TOKEN 입력
 
-# 3. 테스트 실행 (Mock 데이터)
-python execution/monitor.py --once --mock
+# 3. 위치 기반 봇 실행 (추천)
+python execution/telegram_bot.py
+# → Telegram에서 위치 공유하면 주변 스타벅스 혼잡도 즉시 응답
 
-# 4. 실제 모니터링 시작
-python execution/monitor.py
+# 4. 고정 매장 모니터링 (폴링 방식)
+python execution/monitor.py --once --mock  # 테스트
+python execution/monitor.py               # 실제 실행
 ```
 
 ## 스크립트 설명
 
 | 스크립트 | 역할 |
 |---------|------|
+| `execution/telegram_bot.py` | **위치 기반 봇** — 위치 공유 시 주변 스타벅스 즉시 응답 |
+| `execution/find_nearby.py` | 좌표 기반 주변 스타벅스 탐색 |
 | `execution/find_stores.py` | 지역 내 스타벅스 매장 탐색 (stores.json 생성) |
-| `execution/fetch_store_data.py` | 매장 영업 상태 + 혼잡도 추정 |
+| `execution/fetch_store_data.py` | 매장 영업 상태 + 혼잡도 추정 (날씨 반영) |
 | `execution/check_availability.py` | 이전 상태 대비 변화 감지 |
 | `execution/notify_telegram.py` | Telegram 알림 발송 |
-| `execution/monitor.py` | 메인 폴링 루프 |
+| `execution/monitor.py` | 고정 매장 폴링 루프 |
 
 ## 매장 목록 설정
 

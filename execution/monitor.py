@@ -50,6 +50,10 @@ def run_step(cmd: list[str], stdin_data: str | None = None) -> tuple[int, str]:
         text=True,
         cwd=str(BASE_DIR),
     )
+    if result.stdout.strip():
+        for line in result.stdout.strip().splitlines():
+            if line.startswith(("[OK]", "[FAIL]", "[INFO]", "[WARN]", "[ERROR]")):
+                print(f"  {line}")
     if result.returncode != 0:
         print(f"[ERROR] {' '.join(cmd)}\n{result.stderr}", file=sys.stderr)
     return result.returncode, result.stdout
@@ -58,7 +62,7 @@ def run_step(cmd: list[str], stdin_data: str | None = None) -> tuple[int, str]:
 def run_cycle() -> bool:
     print("[1/3] 매장 데이터 수집 중...")
     mock_flag = ["--mock"] if USE_MOCK else []
-    code, current_json = run_step(["python", "execution/fetch_store_data.py"] + mock_flag)
+    code, current_json = run_step([sys.executable, "execution/fetch_store_data.py"] + mock_flag)
     if code != 0:
         print("[WARN] 데이터 수집 실패, 이번 사이클 건너뜀")
         return False
@@ -69,7 +73,7 @@ def run_cycle() -> bool:
     print("[2/3] 가용성 확인 중...")
     moderate_flag = ["--notify-on-moderate"] if NOTIFY_ON_MODERATE else []
     code, alerts_json = run_step(
-        ["python", "execution/check_availability.py", "--current", CURRENT_FILE, "--state", STATE_FILE] + moderate_flag
+        [sys.executable, "execution/check_availability.py", "--current", CURRENT_FILE, "--state", STATE_FILE] + moderate_flag
     )
     if code != 0:
         return False
@@ -84,7 +88,7 @@ def run_cycle() -> bool:
         json.dump(alerts, f, ensure_ascii=False)
 
     print("[3/3] Telegram 알림 발송 중...")
-    code, _ = run_step(["python", "execution/notify_telegram.py", "--alerts", ALERTS_FILE])
+    code, _ = run_step([sys.executable, "execution/notify_telegram.py", "--alerts", ALERTS_FILE])
     return code == 0
 
 
